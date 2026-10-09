@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Warehouse Location Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body class="bg-gray-50 font-sans p-6">
+  <div class="max-w-7xl mx-auto space-y-6">
+    
+    <!-- Header -->
+    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-white p-6 rounded-xl shadow-sm border gap-4">
+      <div>
+        <h1 class="text-2xl font-bold text-gray-800">Warehouse Location Utilization</h1>
+        <p class="text-gray-500 text-sm">ระบบบันทึกและติดตามการใช้งานพื้นที่คลังสินค้ารายเดือน</p>
+      </div>
+      <!-- Month Selector -->
+      <div class="flex items-center space-x-3 w-full sm:w-auto">
+        <label class="font-medium text-gray-700 whitespace-nowrap">เลือกเดือน:</label>
+        <select id="monthSelect" onchange="loadDashboardData()" class="border p-2 rounded-lg bg-white font-semibold text-gray-800 w-full sm:w-auto">
+          <option value="">-- กำลังโหลดรายการเดือน --</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Upload Card -->
+    <div class="bg-white p-6 rounded-xl shadow-sm border space-y-4">
+      <h2 class="text-lg font-bold text-gray-700">อัปโหลดข้อมูลสิ้นเดือน (Upload Monthly Snapshot)</h2>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+        <div>
+          <label class="block text-sm font-medium text-gray-600 mb-1">เลือกเดือนที่อัปโหลด</label>
+          <input type="month" id="uploadMonth" class="w-full border p-2 rounded-lg text-gray-800">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-600 mb-1">เลือกไฟล์ Excel (เฉพาะ Occupied Location)</label>
+          <input type="file" id="excelFile" accept=".xlsx, .xls" class="w-full border p-1.5 rounded-lg text-sm text-gray-600">
+        </div>
+        <div>
+          <button id="uploadBtn" onclick="processUpload()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 rounded-lg transition">
+            บันทึกเข้าฐานข้อมูล
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Metric Cards -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div class="bg-white p-6 rounded-xl shadow-sm border">
+        <p class="text-gray-500 text-sm font-medium">ความจุทั้งหมด (Total Capacity)</p>
+        <p id="statTotal" class="text-3xl font-bold text-gray-800 mt-2">0</p>
+      </div>
+      <div class="bg-white p-6 rounded-xl shadow-sm border border-red-100 bg-red-50/30">
+        <p class="text-red-500 text-sm font-medium">พื้นที่ถูกใช้งาน (Occupied)</p>
+        <p id="statOccupied" class="text-3xl font-bold text-red-600 mt-2">0 (0%)</p>
+      </div>
+      <div class="bg-white p-6 rounded-xl shadow-sm border border-green-100 bg-green-50/30">
+        <p class="text-green-600 text-sm font-medium">พื้นที่ว่างพร้อมใช้เดือนถัดไป (Available)</p>
+        <p id="statAvailable" class="text-3xl font-bold text-green-600 mt-2">0 (0%)</p>
+      </div>
+    </div>
+
+    <!-- Export Button & Table -->
+    <div class="bg-white p-6 rounded-xl shadow-sm border space-y-4">
+      <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <h2 class="text-lg font-bold text-gray-700">รายการ Location คงเหลือ (สำหรับวางแผนเดือนถัดไป)</h2>
+        <button onclick="exportAvailableExcel()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition w-full sm:w-auto">
+          Export Available Excel
+        </button>
+      </div>
+      
+      <div class="overflow-x-auto max-h-96 border rounded-lg">
+        <table class="w-full text-left border-collapse">
+          <thead class="sticky top-0 bg-gray-100 shadow-sm">
+            <tr class="text-gray-600 text-sm border-b">
+              <th class="p-3">Location ID</th>
+              <th class="p-3">Zone</th>
+              <th class="p-3">Slot</th>
+              <th class="p-3">Level</th>
+              <th class="p-3">Status</th>
+            </tr>
+          </thead>
+          <tbody id="locationTableBody" class="text-sm divide-y">
+            <tr><td colspan="5" class="p-4 text-center text-gray-400">กรุณาเลือกเดือนเพื่อดูข้อมูล</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    // URL Apps Script ของคุณ
+    const API_URL = "https://script.google.com/macros/s/AKfycbwHZFeYskSdMvI8OJIpzBHp2NY14eXHYCmRmOxPFtRZy-nC0TblkhZsJPZSI3-O5cb2/exec"; 
+
+    let currentSnapshotData = [];
+
+    window.onload = async () => {
+      await fetchMonthList();
+    };
+
+    async function fetchMonthList() {
+      try {
+        const res = await fetch(`${API_URL}?action=getMonths`);
+        const result = await res.json();
+        const select = document.getElementById("monthSelect");
+        select.innerHTML = "";
+        
+        if(result.months && result.months.length > 0) {
+          result.months.forEach(m => {
+            select.innerHTML += `<option value="${m}">${m}</option>`;
+          });
+          loadDashboardData();
+        } else {
+          select.innerHTML = `<option value="">ยังไม่มีข้อมูลประวัติ</option>`;
+          document.getElementById("locationTableBody").innerHTML = `<tr><td colspan="5" class="p-4 text-center text-gray-400">ยังไม่มีข้อมูลในระบบ กรุณาอัปโหลดไฟล์สิ้นเดือน</td></tr>`;
+        }
+      } catch (err) {
+        console.error("Fetch Error:", err);
+        alert("ไม่สามารถเชื่อมต่อฐานข้อมูลได้ กรุณาตรวจสอบการเปิดสิทธิ์ Anyone บน Google Apps Script");
+      }
+    }
+
+    async function loadDashboardData() {
+      const month = document.getElementById("monthSelect").value;
+      if(!month) return;
+
+      const tbody = document.getElementById("locationTableBody");
+      tbody.innerHTML = `<tr><td colspan="5" class="p-4 text-center text-gray-400">กำลังโหลดข้อมูล...</td></tr>`;
+
+      try {
+        const res = await fetch(`${API_URL}?action=getSnapshot&month=${month}`);
+        const result = await res.json();
+        
+        if(result.success) {
+          currentSnapshotData = result.data;
+          renderDashboard(result.data);
+        }
+      } catch (err) {
+        console.error("Load Data Error:", err);
+        tbody.innerHTML = `<tr><td colspan="5" class="p-4 text-center text-red-500">เกิดข้อผิดพลาดในการดึงข้อมูล</td></tr>`;
+      }
+    }
+
+    function renderDashboard(data) {
+      const total = data.length;
+      const occupied = data.filter(d => d.status === "Occupied").length;
+      const available = total - occupied;
+
+      const occPct = total > 0 ? ((occupied/total)*100).toFixed(1) : 0;
+      const availPct = total > 0 ? ((available/total)*100).toFixed(1) : 0;
+
+      document.getElementById("statTotal").innerText = total.toLocaleString();
+      document.getElementById("statOccupied").innerText = `${occupied.toLocaleString()} (${occPct}%)`;
+      document.getElementById("statAvailable").innerText = `${available.toLocaleString()} (${availPct}%)`;
+
+      // Render Table Available
+      const tbody = document.getElementById("locationTableBody");
+      tbody.innerHTML = "";
+      
+      const availableList = data.filter(d => d.status === "Available");
+      if(availableList.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" class="p-4 text-center text-gray-400">ไม่มีตำแหน่งว่างในเดือนนี้</td></tr>`;
+        return;
+      }
+
+      availableList.forEach(item => {
+        tbody.innerHTML += `
+          <tr class="hover:bg-gray-50 transition">
+            <td class="p-3 font-semibold text-blue-600">${item.location_id}</td>
+            <td class="p-3">${item.zone}</td>
+            <td class="p-3">${item.slot}</td>
+            <td class="p-3">${item.level}</td>
+            <td class="p-3"><span class="bg-green-100 text-green-700 px-2.5 py-1 rounded-full text-xs font-medium">Available</span></td>
+          </tr>
+        `;
+      });
+    }
+
+    async function processUpload() {
+      const monthInput = document.getElementById("uploadMonth").value;
+      const fileInput = document.getElementById("excelFile");
+      const btn = document.getElementById("uploadBtn");
+
+      if(!monthInput || !fileInput.files[0]) {
+        alert("กรุณาเลือกเดือน และ ไฟล์ Excel ให้ครบถ้วน");
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerText = "กำลังบันทึกข้อมูล...";
+
+      const file = fileInput.files[0];
+      const reader = new FileReader();
+
+      reader.onload = async (e) => {
+        try {
+          const data = new Uint8Array(e.target.result);
+          const workbook = XLSX.read(data, {type: 'array'});
+          const sheetName = workbook.SheetNames[0];
+          const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], {header: 1});
+
+          // ดึง Location ID จากคอลัมน์แรก
+          const occupiedLocs = [];
+          for(let i=0; i<rows.length; i++) {
+            if(rows[i][0]) {
+              occupiedLocs.push(String(rows[i][0]).trim());
+            }
+          }
+
+          // ส่งข้อมูลเข้า Apps Script แบบ Text/Plain เพื่อหลีกเลี่ยงการติด CORS Preflight
+          const payload = {
+            month: monthInput,
+            occupied_locations: occupiedLocs
+          };
+
+          const res = await fetch(API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify(payload)
+          });
+
+          const result = await res.json();
+          if(result.success) {
+            alert("อัปโหลดและบันทึก Snapshot เรียบร้อยแล้ว!");
+            fileInput.value = "";
+            await fetchMonthList();
+          } else {
+            alert("เกิดข้อผิดพลาด: " + result.message);
+          }
+        } catch (err) {
+          console.error("Upload Error:", err);
+          alert("บันทึกเรียบร้อย หรือเกิดการประมวลผล กรุณากดโหลดข้อมูลอีกครั้ง");
+          await fetchMonthList();
+        } finally {
+          btn.disabled = false;
+          btn.innerText = "บันทึกเข้าฐานข้อมูล";
+        }
+      };
+
+      reader.readAsArrayBuffer(file);
+    }
+
+    function exportAvailableExcel() {
+      const availableData = currentSnapshotData
+        .filter(d => d.status === "Available")
+        .map(d => ({
+          "Location ID": d.location_id,
+          "Zone": d.zone,
+          "Slot": d.slot,
+          "Level": d.level,
+          "Status": "Available"
+        }));
+
+      if(availableData.length === 0) {
+        alert("ไม่มีข้อมูลสำหรับ Export");
+        return;
+      }
+
+      const worksheet = XLSX.utils.json_to_sheet(availableData);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Available_Locations");
+      
+      const currentMonth = document.getElementById("monthSelect").value;
+      XLSX.writeFile(workbook, `Available_Locations_For_Next_Month_${currentMonth}.xlsx`);
+    }
+  </script>
+</body>
+</html>
