@@ -33,7 +33,7 @@
           <input type="month" id="uploadMonth" class="w-full border p-2 rounded-lg text-gray-800">
         </div>
         <div>
-          <label class="block text-sm font-medium text-gray-600 mb-1">เลือกไฟล์ Excel (เฉพาะ Occupied Location)</label>
+          <label class="block text-sm font-medium text-gray-600 mb-1">เลือกไฟล์ Excel (ต้องมีคอลัมน์ชื่อ Location)</label>
           <input type="file" id="excelFile" accept=".xlsx, .xls" class="w-full border p-1.5 rounded-lg text-sm text-gray-600">
         </div>
         <div>
@@ -58,6 +58,18 @@
         <p class="text-green-600 text-sm font-medium">พื้นที่ว่างพร้อมใช้เดือนถัดไป (Available)</p>
         <p id="statAvailable" class="text-3xl font-bold text-green-600 mt-2">0 (0%)</p>
       </div>
+    </div>
+
+    <!-- Summary bar -->
+    <div class="bg-white p-6 rounded-xl shadow-sm border space-y-3">
+      <div class="flex justify-between text-sm font-medium">
+        <span id="barUsed" class="text-red-600">ใช้ไปแล้ว 0 Location</span>
+        <span id="barFree" class="text-green-600">เหลือ 0 Location</span>
+      </div>
+      <div class="w-full bg-green-200 rounded-full h-4 overflow-hidden">
+        <div id="barFill" class="bg-red-500 h-4 transition-all" style="width:0%"></div>
+      </div>
+      <p id="statInfo" class="text-sm text-gray-500"></p>
     </div>
 
     <!-- History Card -->
@@ -204,14 +216,14 @@
         const result = await fetchJSON(`${API_URL}?action=getSnapshot&month=${encodeURIComponent(month)}`);
         if (!result.success) throw new Error(result.message || "ไม่ทราบสาเหตุ");
         currentSnapshotData = result.data;
-        renderDashboard(result.data);
+        renderDashboard(result.data, result);
       } catch (err) {
         console.error("Load Data Error:", err);
         tbody.innerHTML = msgRow("เกิดข้อผิดพลาดในการดึงข้อมูล: " + err.message, "text-red-500");
       }
     }
 
-    function renderDashboard(data) {
+    function renderDashboard(data, meta = {}) {
       const total = data.length;
       const occupied = data.filter(d => d.status === "Occupied").length;
       const available = total - occupied;
@@ -221,6 +233,26 @@
       document.getElementById("statTotal").innerText = total.toLocaleString();
       document.getElementById("statOccupied").innerText = `${occupied.toLocaleString()} (${occPct}%)`;
       document.getElementById("statAvailable").innerText = `${available.toLocaleString()} (${availPct}%)`;
+
+      // แถบสรุป + ข้อความวินิจฉัย
+      document.getElementById("barUsed").innerText = `ใช้ไปแล้ว ${occupied.toLocaleString()} Location (${occPct}%)`;
+      document.getElementById("barFree").innerText = `เหลือ ${available.toLocaleString()} Location (${availPct}%)`;
+      document.getElementById("barFill").style.width = `${occPct}%`;
+
+      const info = document.getElementById("statInfo");
+      info.className = "text-sm text-gray-500";
+      if (total === 0) {
+        info.className = "text-sm text-red-500";
+        info.innerText = "ไม่พบรายการใน Master_Locations ตรวจว่าแถว 1 เป็นหัวตาราง และมีข้อมูลที่คอลัมน์ A-D ตั้งแต่แถว 2";
+      } else if (meta.month_rows === 0) {
+        info.className = "text-sm text-amber-600";
+        info.innerText = `ไม่มีข้อมูลที่อัปโหลดของเดือน ${meta.month || ""} ทุก Location จึงแสดงเป็นว่าง ให้อัปโหลดไฟล์ของเดือนนี้`;
+      } else if (occupied === 0) {
+        info.className = "text-sm text-amber-600";
+        info.innerText = "มีข้อมูลของเดือนนี้ แต่ไม่มี Location ที่ตรงกับ Master ตรวจว่า ID ในไฟล์ Excel ตรงกับ Master_Locations";
+      } else {
+        info.innerText = `Master ${total.toLocaleString()} Location, ถูกใช้งาน ${occupied.toLocaleString()}, ว่าง ${available.toLocaleString()}`;
+      }
 
       const tbody = document.getElementById("locationTableBody");
       const availableList = data.filter(d => d.status !== "Occupied");
@@ -390,21 +422,39 @@
       reader.onload = async (e) => {
         try {
           const workbook = XLSX.read(new Uint8Array(e.target.result), { type: "array" });
-          const sheet = workbook.Sheets[workbook.SheetNames[0]];
-          const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+          // หาคอลัมน์ชื่อ "Location" จากหัวตาราง (ค้นใน 30 แถวแรก ทุกชีต)
+          // ลำดับความสำคัญ: ตรงกับ "Location" พอดี ก่อน แล้วค่อยขึ้นต้นด้วย "Location" เช่น "Location ID"
+          const norm = v => String(v ?? "").trim().toLowerCase();
+          let rows = null, headerRow = -1, colIdx = -1;
 
-          // ดึง Location ID จากคอลัมน์แรก (ข้ามแถวว่าง/หัวตาราง และตัดค่าซ้ำ)
+          outer:
+          for (const pass of ["exact", "starts"]) {
+            for (const name of workbook.SheetNames) {
+              const r = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: "" });
+              for (let i = 0; i < Math.min(r.length, 30); i++) {
+                for (let c = 0; c < (r[i] || []).length; c++) {
+                  const h = norm(r[i][c]);
+                  const hit = pass === "exact" ? h === "location" : h.startsWith("location");
+                  if (hit) { rows = r; headerRow = i; colIdx = c; break outer; }
+                }
+              }
+            }
+          }
+
+          if (colIdx < 0) {
+            throw new Error('ไม่พบคอลัมน์ชื่อ "Location" ในไฟล์ (ตรวจว่ามีหัวคอลัมน์ชื่อ Location)');
+          }
+
+          // อ่านค่าใต้หัวคอลัมน์ (ข้ามแถวว่าง ตัดช่องว่าง และตัดค่าซ้ำ)
           const set = new Set();
-          rows.forEach((row, i) => {
-            const v = row && row[0] != null ? String(row[0]).trim() : "";
-            if (!v) return;
-            if (i === 0 && /location|loc\b|ตำแหน่ง/i.test(v)) return; // header
-            set.add(v);
-          });
+          for (let i = headerRow + 1; i < rows.length; i++) {
+            const v = rows[i] && rows[i][colIdx] != null ? String(rows[i][colIdx]).trim() : "";
+            if (v) set.add(v);
+          }
           const occupiedLocs = Array.from(set);
 
           if (occupiedLocs.length === 0) {
-            throw new Error("ไม่พบ Location ในคอลัมน์แรกของไฟล์");
+            throw new Error('พบคอลัมน์ "Location" แต่ไม่มีข้อมูลใต้หัวคอลัมน์');
           }
 
           // ส่งเป็น text/plain เพื่อเลี่ยง CORS preflight
@@ -457,5 +507,3 @@
   </script>
 </body>
 </html>
-
-
