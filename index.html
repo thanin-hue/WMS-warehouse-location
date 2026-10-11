@@ -60,13 +60,56 @@
       </div>
     </div>
 
+    <!-- History Card -->
+    <div class="bg-white p-6 rounded-xl shadow-sm border space-y-4">
+      <h2 class="text-lg font-bold text-gray-700">ข้อมูลย้อนหลัง (History)</h2>
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+        <div>
+          <label class="block text-sm font-medium text-gray-600 mb-1">ตั้งแต่เดือน</label>
+          <input type="month" id="histFrom" class="w-full border p-2 rounded-lg text-gray-800">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-600 mb-1">ถึงเดือน</label>
+          <input type="month" id="histTo" class="w-full border p-2 rounded-lg text-gray-800">
+        </div>
+        <button onclick="loadHistory()" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 rounded-lg transition">
+          ดูข้อมูลย้อนหลัง
+        </button>
+        <button id="histExportBtn" onclick="exportHistoryExcel()" class="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-medium py-2.5 rounded-lg transition">
+          Export ย้อนหลัง Excel
+        </button>
+      </div>
+      <div class="overflow-x-auto max-h-80 border rounded-lg">
+        <table class="w-full text-left border-collapse">
+          <thead class="sticky top-0 bg-gray-100 shadow-sm">
+            <tr class="text-gray-600 text-sm border-b">
+              <th class="p-3">เดือน</th>
+              <th class="p-3 text-right">ทั้งหมด</th>
+              <th class="p-3 text-right">Occupied</th>
+              <th class="p-3 text-right">Available</th>
+              <th class="p-3 w-1/3">% การใช้งาน</th>
+            </tr>
+          </thead>
+          <tbody id="historyBody" class="text-sm divide-y">
+            <tr><td colspan="5" class="p-4 text-center text-gray-400">เลือกช่วงเดือนแล้วกด "ดูข้อมูลย้อนหลัง"</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="text-xs text-gray-400">หมายเหตุ: จำนวนทั้งหมดคำนวณจากรายการใน Master_Locations ปัจจุบัน</p>
+    </div>
+
     <!-- Table -->
     <div class="bg-white p-6 rounded-xl shadow-sm border space-y-4">
       <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <h2 class="text-lg font-bold text-gray-700">รายการ Location คงเหลือ (สำหรับวางแผนเดือนถัดไป)</h2>
-        <button onclick="exportAvailableExcel()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition w-full sm:w-auto">
-          Export Available Excel
-        </button>
+        <div class="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+          <button onclick="exportAvailableExcel()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition">
+            Export Available Excel
+          </button>
+          <button onclick="exportSnapshotExcel()" class="bg-gray-700 hover:bg-gray-800 text-white text-sm font-medium px-4 py-2 rounded-lg transition">
+            Export ทั้งหมดของเดือนนี้
+          </button>
+        </div>
       </div>
 
       <div class="overflow-x-auto max-h-96 border rounded-lg">
@@ -137,6 +180,8 @@
             .map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
           if (selectMonth && result.months.includes(selectMonth)) select.value = selectMonth;
           await loadDashboardData();
+          initHistoryRange(result.months);
+          loadHistory();
         } else {
           select.innerHTML = `<option value="">ยังไม่มีข้อมูลประวัติ</option>`;
           tbody.innerHTML = msgRow("ยังไม่มีข้อมูลในระบบ กรุณาอัปโหลดไฟล์สิ้นเดือน");
@@ -200,6 +245,126 @@
         : "";
 
       tbody.innerHTML = rows + more;
+    }
+
+    // ---------- ข้อมูลย้อนหลัง ----------
+    function initHistoryRange(months) {
+      const f = document.getElementById("histFrom");
+      const t = document.getElementById("histTo");
+      if (!f.value || !t.value) {
+        // months เรียงจากใหม่ไปเก่า: ค่าเริ่มต้น = 6 เดือนล่าสุด
+        t.value = months[0];
+        f.value = months[Math.min(5, months.length - 1)];
+      }
+    }
+
+    function histUrl(detail) {
+      const from = document.getElementById("histFrom").value;
+      const to = document.getElementById("histTo").value;
+      if (from && to && from > to) throw new Error("เดือนเริ่มต้นต้องไม่มากกว่าเดือนสิ้นสุด");
+      return `${API_URL}?action=getHistory&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}` +
+             (detail ? "&detail=1" : "");
+    }
+
+    const histMsg = (text, cls = "text-gray-400") =>
+      `<tr><td colspan="5" class="p-4 text-center ${cls}">${esc(text)}</td></tr>`;
+
+    async function loadHistory() {
+      const tbody = document.getElementById("historyBody");
+      tbody.innerHTML = histMsg("กำลังโหลดข้อมูลย้อนหลัง...");
+      try {
+        const result = await fetchJSON(histUrl(false));
+        if (!result.success) throw new Error(result.message || "ไม่ทราบสาเหตุ");
+
+        if (!result.summary.length) {
+          tbody.innerHTML = histMsg("ไม่มีข้อมูลในช่วงเดือนที่เลือก");
+          return;
+        }
+        tbody.innerHTML = result.summary.map(s => {
+          const pct = s.total > 0 ? (s.occupied / s.total) * 100 : 0;
+          return `
+            <tr class="hover:bg-gray-50">
+              <td class="p-3 font-semibold text-gray-800">${esc(s.month)}</td>
+              <td class="p-3 text-right">${s.total.toLocaleString()}</td>
+              <td class="p-3 text-right text-red-600">${s.occupied.toLocaleString()}</td>
+              <td class="p-3 text-right text-green-600">${s.available.toLocaleString()}</td>
+              <td class="p-3">
+                <div class="flex items-center gap-2">
+                  <div class="flex-1 bg-gray-200 rounded-full h-2.5">
+                    <div class="bg-red-500 h-2.5 rounded-full" style="width:${pct.toFixed(1)}%"></div>
+                  </div>
+                  <span class="text-xs text-gray-600 w-12 text-right">${pct.toFixed(1)}%</span>
+                </div>
+              </td>
+            </tr>`;
+        }).join("");
+      } catch (err) {
+        console.error("History Error:", err);
+        tbody.innerHTML = histMsg("เกิดข้อผิดพลาด: " + err.message, "text-red-500");
+      }
+    }
+
+    async function exportHistoryExcel() {
+      const btn = document.getElementById("histExportBtn");
+      btn.disabled = true;
+      const oldText = btn.innerText;
+      btn.innerText = "กำลังเตรียมไฟล์...";
+      try {
+        const result = await fetchJSON(histUrl(true));
+        if (!result.success) throw new Error(result.message || "ไม่ทราบสาเหตุ");
+        if (!result.months.length) {
+          alert("ไม่มีข้อมูลในช่วงเดือนที่เลือก");
+          return;
+        }
+
+        // Sheet 1: สรุปรายเดือน
+        const summaryRows = result.summary.map(s => ({
+          "Month": s.month,
+          "Total Capacity": s.total,
+          "Occupied": s.occupied,
+          "Available": s.available,
+          "Occupied %": s.total > 0 ? Number(((s.occupied / s.total) * 100).toFixed(1)) : 0
+        }));
+
+        // Sheet 2: Location x เดือน (แต่ละคอลัมน์คือเดือน)
+        const matrixRows = result.detail.map(d => {
+          const row = { "Location ID": d.location_id, "Zone": d.zone, "Slot": d.slot, "Level": d.level };
+          result.months.forEach((m, i) => { row[m] = d.statuses[i]; });
+          return row;
+        });
+
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), "Summary");
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(matrixRows), "Location_by_Month");
+
+        const first = result.months[0];
+        const last = result.months[result.months.length - 1];
+        XLSX.writeFile(wb, `Warehouse_History_${first}_to_${last}.xlsx`);
+      } catch (err) {
+        console.error("Export History Error:", err);
+        alert("Export ไม่สำเร็จ: " + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerText = oldText;
+      }
+    }
+
+    function exportSnapshotExcel() {
+      if (!currentSnapshotData.length) {
+        alert("ไม่มีข้อมูลสำหรับ Export");
+        return;
+      }
+      const rows = currentSnapshotData.map(d => ({
+        "Location ID": d.location_id,
+        "Zone": d.zone,
+        "Slot": d.slot,
+        "Level": d.level,
+        "Status": d.status === "Occupied" ? "Occupied" : "Available"
+      }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Snapshot");
+      const month = document.getElementById("monthSelect").value;
+      XLSX.writeFile(wb, `Location_Snapshot_${month}.xlsx`);
     }
 
     async function processUpload() {
@@ -292,4 +457,5 @@
   </script>
 </body>
 </html>
+
 
