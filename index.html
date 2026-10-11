@@ -62,6 +62,7 @@
 
     <!-- Summary bar -->
     <div class="bg-white p-6 rounded-xl shadow-sm border space-y-3">
+      <p id="viewLabel" class="text-sm font-semibold text-gray-700"></p>
       <div class="flex justify-between text-sm font-medium">
         <span id="barUsed" class="text-red-600">ใช้ไปแล้ว 0 Location</span>
         <span id="barFree" class="text-green-600">เหลือ 0 Location</span>
@@ -75,7 +76,7 @@
     <!-- History Card -->
     <div class="bg-white p-6 rounded-xl shadow-sm border space-y-4">
       <h2 class="text-lg font-bold text-gray-700">ข้อมูลย้อนหลัง (History)</h2>
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+      <div class="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
         <div>
           <label class="block text-sm font-medium text-gray-600 mb-1">ตั้งแต่เดือน</label>
           <input type="month" id="histFrom" class="w-full border p-2 rounded-lg text-gray-800">
@@ -84,7 +85,14 @@
           <label class="block text-sm font-medium text-gray-600 mb-1">ถึงเดือน</label>
           <input type="month" id="histTo" class="w-full border p-2 rounded-lg text-gray-800">
         </div>
-        <button onclick="loadHistory()" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 rounded-lg transition">
+        <div>
+          <label class="block text-sm font-medium text-gray-600 mb-1">วิธีสรุปทั้งช่วง</label>
+          <select id="histMode" onchange="historyData ? applyHistoryToDashboard() : loadHistory(true)" class="w-full border p-2 rounded-lg bg-white text-gray-800">
+            <option value="any">ใช้อย่างน้อย 1 เดือน (ว่างตลอดช่วง = Available)</option>
+            <option value="last">ตามสถานะเดือนสุดท้ายของช่วง</option>
+          </select>
+        </div>
+        <button onclick="loadHistory(true)" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 rounded-lg transition">
           ดูข้อมูลย้อนหลัง
         </button>
         <button id="histExportBtn" onclick="exportHistoryExcel()" class="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-medium py-2.5 rounded-lg transition">
@@ -216,6 +224,8 @@
         const result = await fetchJSON(`${API_URL}?action=getSnapshot&month=${encodeURIComponent(month)}`);
         if (!result.success) throw new Error(result.message || "ไม่ทราบสาเหตุ");
         currentSnapshotData = result.data;
+        historyData = null;
+        setView(month, `เดือน ${month}`);
         renderDashboard(result.data, result);
       } catch (err) {
         console.error("Load Data Error:", err);
@@ -258,7 +268,7 @@
       const availableList = data.filter(d => d.status !== "Occupied");
 
       if (availableList.length === 0) {
-        tbody.innerHTML = msgRow("ไม่มีตำแหน่งว่างในเดือนนี้");
+        tbody.innerHTML = msgRow("ไม่มีตำแหน่งว่างในช่วงที่เลือก");
         return;
       }
 
@@ -301,11 +311,11 @@
     const histMsg = (text, cls = "text-gray-400") =>
       `<tr><td colspan="5" class="p-4 text-center ${cls}">${esc(text)}</td></tr>`;
 
-    async function loadHistory() {
+    async function loadHistory(apply = false) {
       const tbody = document.getElementById("historyBody");
       tbody.innerHTML = histMsg("กำลังโหลดข้อมูลย้อนหลัง...");
       try {
-        const result = await fetchJSON(histUrl(false));
+        const result = await fetchJSON(histUrl(apply));
         if (!result.success) throw new Error(result.message || "ไม่ทราบสาเหตุ");
 
         if (!result.summary.length) {
@@ -330,10 +340,56 @@
               </td>
             </tr>`;
         }).join("");
+
+        if (apply) {
+          historyData = result;
+          applyHistoryToDashboard();
+        }
       } catch (err) {
         console.error("History Error:", err);
         tbody.innerHTML = histMsg("เกิดข้อผิดพลาด: " + err.message, "text-red-500");
       }
+    }
+
+    let historyData = null;     // ผลลัพธ์ย้อนหลังแบบ detail ที่ใช้แสดงบน dashboard
+    let currentViewTag = "";    // ใช้ตั้งชื่อไฟล์ Export ให้ตรงกับข้อมูลที่แสดงอยู่
+
+    function setView(tag, text) {
+      currentViewTag = tag;
+      document.getElementById("viewLabel").innerText = "กำลังแสดงข้อมูล: " + text;
+    }
+
+    // ให้การ์ด 3 ช่อง แถบสถานะ และตาราง Location คงเหลือ แสดงตามช่วงเดือนย้อนหลัง
+    function applyHistoryToDashboard() {
+      if (!historyData || !historyData.months.length) return;
+
+      const months = historyData.months;
+      const first = months[0];
+      const last = months[months.length - 1];
+      const mode = document.getElementById("histMode").value;
+
+      const data = historyData.detail.map(d => {
+        const occupied = mode === "last"
+          ? d.statuses[d.statuses.length - 1] === "Occupied"
+          : d.statuses.includes("Occupied");
+        return {
+          location_id: d.location_id,
+          zone: d.zone,
+          slot: d.slot,
+          level: d.level,
+          status: occupied ? "Occupied" : "Available"
+        };
+      });
+
+      currentSnapshotData = data;
+
+      const range = first === last ? first : `${first} ถึง ${last}`;
+      const desc = mode === "last"
+        ? `ช่วง ${range} (ตามสถานะของเดือน ${last})`
+        : `ช่วง ${range} (Occupied = ถูกใช้อย่างน้อย 1 เดือน, Available = ว่างตลอดช่วง)`;
+
+      setView(first === last ? first : `${first}_to_${last}`, desc);
+      renderDashboard(data, { month: range, month_rows: months.length });
     }
 
     async function exportHistoryExcel() {
@@ -395,7 +451,7 @@
       }));
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Snapshot");
-      const month = document.getElementById("monthSelect").value;
+      const month = currentViewTag || document.getElementById("monthSelect").value;
       XLSX.writeFile(wb, `Location_Snapshot_${month}.xlsx`);
     }
 
@@ -501,7 +557,7 @@
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, worksheet, "Available_Locations");
 
-      const currentMonth = document.getElementById("monthSelect").value;
+      const currentMonth = currentViewTag || document.getElementById("monthSelect").value;
       XLSX.writeFile(workbook, `Available_Locations_For_Next_Month_${currentMonth}.xlsx`);
     }
   </script>
