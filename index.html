@@ -149,6 +149,22 @@
         </table>
       </div>
     </div>
+
+    <!-- Warehouse Map -->
+    <div class="bg-white p-6 rounded-xl shadow-sm border space-y-4">
+      <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+        <h2 class="text-lg font-bold text-gray-700">แผนผังการใช้งาน Location (Warehouse Map)</h2>
+        <div class="flex items-center gap-4 text-sm text-gray-600">
+          <span class="flex items-center gap-1.5"><span class="inline-block w-4 h-4 rounded-sm bg-red-500"></span>ถูกใช้งาน</span>
+          <span class="flex items-center gap-1.5"><span class="inline-block w-4 h-4 rounded-sm bg-green-500"></span>ว่าง</span>
+        </div>
+      </div>
+      <p class="text-xs text-gray-400">แยกตาม Zone: แนวนอน = Slot, แนวตั้ง = Level (ชั้นบนอยู่ด้านบน) เอาเมาส์ชี้ที่ช่องเพื่อดู Location ID</p>
+      <p id="mapNote" class="text-xs text-amber-600"></p>
+      <div id="mapBox" class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <p class="text-sm text-gray-400">กรุณาเลือกเดือนเพื่อดูแผนผัง</p>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -233,6 +249,76 @@
       }
     }
 
+    // แผนผัง: แยกตาม Zone, แนวนอน = Slot, แนวตั้ง = Level
+    function renderMap(data) {
+      const box = document.getElementById("mapBox");
+      const note = document.getElementById("mapNote");
+      note.innerText = "";
+
+      if (!data.length) {
+        box.innerHTML = `<p class="text-sm text-gray-400">ไม่มีข้อมูล</p>`;
+        return;
+      }
+
+      const nat = (a, b) => String(a).localeCompare(String(b), undefined, { numeric: true });
+      const SEP = "\u0001";
+      const zones = new Map();
+      data.forEach(d => {
+        const z = String(d.zone ?? "").trim() || "(ไม่ระบุโซน)";
+        if (!zones.has(z)) zones.set(z, []);
+        zones.get(z).push(d);
+      });
+
+      let hasMixed = false;
+
+      box.innerHTML = Array.from(zones.keys()).sort(nat).map(z => {
+        const items = zones.get(z);
+        const slots = [...new Set(items.map(d => String(d.slot ?? "")))].sort(nat);
+        const levels = [...new Set(items.map(d => String(d.level ?? "")))].sort(nat).reverse();
+
+        const cells = new Map();
+        items.forEach(d => {
+          const k = String(d.slot ?? "") + SEP + String(d.level ?? "");
+          if (!cells.has(k)) cells.set(k, []);
+          cells.get(k).push(d);
+        });
+
+        const used = items.filter(d => d.status === "Occupied").length;
+
+        let grid = `<div style="display:grid;grid-template-columns:auto repeat(${slots.length},22px);gap:2px;align-items:center">`;
+        grid += `<div></div>` + slots.map(s =>
+          `<div class="text-center text-gray-400" style="font-size:9px">${esc(s)}</div>`).join("");
+
+        levels.forEach(lv => {
+          grid += `<div class="pr-1 text-right text-gray-400" style="font-size:9px">${esc(lv)}</div>`;
+          slots.forEach(s => {
+            const arr = cells.get(s + SEP + lv);
+            if (!arr) { grid += `<div style="height:22px"></div>`; return; }
+            const occ = arr.filter(d => d.status === "Occupied").length;
+            let cls = "bg-green-500";
+            if (occ === arr.length) cls = "bg-red-500";
+            else if (occ > 0) { cls = "bg-amber-400"; hasMixed = true; }
+            const tip = arr.map(d => `${d.location_id}: ${d.status === "Occupied" ? "ถูกใช้งาน" : "ว่าง"}`).join("\n");
+            grid += `<div class="${cls} rounded-sm" style="height:22px" title="${esc(tip)}"></div>`;
+          });
+        });
+        grid += `</div>`;
+
+        return `
+          <div class="border rounded-lg p-3">
+            <div class="flex justify-between text-sm font-semibold text-gray-700 mb-2">
+              <span>Zone ${esc(z)}</span>
+              <span class="font-normal text-gray-500">ใช้ ${used.toLocaleString()} / ${items.length.toLocaleString()}</span>
+            </div>
+            <div class="overflow-x-auto pb-1">${grid}</div>
+          </div>`;
+      }).join("");
+
+      if (hasMixed) {
+        note.innerText = "ช่องสีเหลือง = มีหลาย Location อยู่ใน Zone/Slot/Level เดียวกัน และสถานะไม่เหมือนกัน (ชี้เมาส์เพื่อดูรายละเอียด)";
+      }
+    }
+
     function renderDashboard(data, meta = {}) {
       const total = data.length;
       const occupied = data.filter(d => d.status === "Occupied").length;
@@ -265,6 +351,8 @@
       }
 
       const tbody = document.getElementById("locationTableBody");
+      renderMap(data);
+
       const availableList = data.filter(d => d.status !== "Occupied");
 
       if (availableList.length === 0) {
